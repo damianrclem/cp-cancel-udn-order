@@ -1,0 +1,159 @@
+org: revolutionmortgage
+app: credit-plus
+service: cp-cancel-udn-order
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  profile:
+    prod: prodAccount
+    stage: stageAccount
+    dev: devAccount
+    pr: prAccount
+  tableName: ${self:custom.stage}-${self:service}
+  eventBusName: "${self:custom.stage}-credit-plus"
+  eventBusArn: "arn:aws:events:#{AWS::Region}:#{AWS::AccountId}:event-bus/${self:custom.eventBusName}"
+  replayQueueArn: "arn:aws:sqs:#{AWS::Region}:#{AWS::AccountId}:${self:service}-${self:custom.stage}-cancelUdnOrder-replay"
+  saveUDNOrderLambdaArn: "arn:aws:sts::#{AWS::AccountId}:assumed-role/${self:service}-${self:custom.stage}-#{AWS::Region}-lambdaRole/${self:service}-${self:custom.stage}-saveUDNOrder"
+  createUDNOrderLambdaSourceArn: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:cp-create-udn-order-${self:custom.stage}-createUdnOrder:$LATEST"
+  creditPlusApi:
+    prod: https://creditplus-api-proxy.rmtg.io/inetapi/request_products.aspx
+    stage: https://creditplus-api-proxy.stagerm.io/inetapi/request_products.aspx
+    dev: https://creditplus-api-proxy.devrm.io/inetapi/request_products.aspx
+    pr: https://creditplus-api-proxy.prrm.io/inetapi/request_products.aspx
+  replayMaxCount: 20 # This is when messages quit replaying and go to the DLQ
+  cancelUDNOrdersTableName: ${self:custom.tableName}
+  cancelUDNOrdersTableArn: "arn:aws:dynamodb:#{AWS::Region}:*:table/${self:custom.tableName}"
+  creditPlusApiInterfaceId:
+    prod: RevolutionMortgage07302021
+    stage: SmartAPITestingIdentifier
+    dev: SmartAPITestingIdentifier
+    pr: SmartAPITestingIdentifier
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: dev
+  profile: ${self:custom.profile.${self:custom.stage}}
+  region: us-east-2
+  tracing:
+    lambda: true
+  logs:
+    restApi: true
+  environment:
+    REGEN_CF_VARS: updating pw # Change this to force CloudFormation to regen stack. Useful if you change a value in secrets manager
+    REGION: ${self:provider.region}
+    STAGE: ${self:custom.stage}
+    CP_EVENT_BUS: ${self:custom.eventBusName}
+    CREDIT_PLUS_API_ENDPOINT: ${self:custom.creditPlusApi.${self:custom.stage}}
+    CREDIT_PLUS_PROXY_API_KEY: !Sub "{{resolve:secretsmanager:${self:custom.stage}-${self:service}:SecretString:creditPlusApiKey}}"
+    CREDIT_PLUS_API_USERNAME: !Sub "{{resolve:secretsmanager:${self:custom.stage}-${self:service}:SecretString:creditPlusApiUsername}}"
+    CREDIT_PLUS_API_PASSWORD: !Sub "{{resolve:secretsmanager:${self:custom.stage}-${self:service}:SecretString:creditPlusApiPassword}}"
+    CREDIT_PLUS_API_INTERFACE_ID: ${self:custom.creditPlusApiInterfaceId.${self:custom.stage}}
+    TABLE_NAME: ${self:custom.tableName}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - events:PutEvents
+      Resource: ${self:custom.eventBusArn}
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:GetItem
+      Resource: ${self:custom.cancelUDNOrdersTableArn}
+
+functions:
+  cancelUDNOrder:
+    handler: src/functions/cancelUDNOrder.handler
+    events:
+      - eventBridge:
+          eventBus: ${self:custom.eventBusArn}
+          pattern:
+            source:
+              - "com.revolutionmortgage.encompass.ee-loan-hooks"
+            detail-type:
+              - "Loan"
+              - "Lambda Function Invocation Result - Failure" # This is in case the message is replayed
+            detail:
+              eventType:
+                - "milestone-doneindicator-changed"
+              fields:
+                'Log.MS.LastCompleted':
+                  - Funding
+      - eventBridge:
+          eventBus: ${self:custom.eventBusArn}
+          pattern:
+            source:
+              - "com.revolutionmortgage.encompass.ee-loan-hooks"
+            detail-type:
+              - "Loan"
+              - "Lambda Function Invocation Result - Failure" # This is in case the message is replayed
+            detail:
+              eventType:
+                - "hmda-actiontaken-changed"
+              fields:
+                '1393':
+                  - Application approved but not accepted
+                  - Application denied
+                  - Application withdrawn
+                  - File Closed for incompleteness
+      - eventBridge:
+          eventBus: ${self:custom.eventBusArn}
+          pattern:
+            source:
+              - "com.revolutionmortgage.encompass.ee-loan-hooks"
+            detail-type:
+              - "Loan"
+              - "Lambda Function Invocation Result - Failure" # This is in case the message is replayed
+            detail:
+              eventType:
+                - "borrower-changed"
+                - "coborrower-changed"
+              fields:
+                'CX.CP.UDN.FILENUMBER':
+                  - anything-but: ""
+    destinations:
+      onSuccess: ${self:custom.eventBusArn}
+      onFailure: ${self:custom.eventBusArn}
+  
+  cancelUdnOrderReplay:
+    handler: src/functions/cancelUDNOrderReplay.handler
+    events:
+      - sqs: ${self:custom.replayQueueArn}
+
+  saveUDNOrder:
+    handler: src/functions/saveUDNOrder.handler
+    events:
+      - eventBridge:
+          eventBus: ${self:custom.eventBusArn}
+          pattern:
+            source:
+              - "lambda"
+            detail-type:
+              - "Lambda Function Invocation Result - Success"
+            resources:
+              - ${self:custom.createUDNOrderLambdaSourceArn}
+          detail:
+              requestPayload:
+                detail:
+                  loan:
+                    id:
+                      - anything-but: ""
+              responsePayload:
+                borrowerFirstName:
+                  - anything-but: ""
+                borrowerLastName:
+                  - anything-but: ""
+                borrowerSsn:
+                  - anything-but: ""
+                vendorOrderIdentifier:
+                  - anything-but: ""
+
+resources:
+  - ${file(./resources/replayQueue.yml)}
+  - ${file(./resources/deadLetterQueue.yml)}
+  - ${file(./resources/cancelUDNOrdersDatabase.yml)}
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-pseudo-parameters
+  - serverless-offline

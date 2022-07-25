@@ -1,0 +1,39 @@
+{
+  "name": "cp-cancel-udn-order",
+  "version": "1.0.0",
+  "description": "",
+  "author": "",
+  "license": "ISC",
+  "scripts": {
+    "test": "jest -c jest.config.js",
+    "test:unit": "jest -c jest.config.unit.js",
+    "test:int": "jest -c jest.config.int.js",
+    "start": "sls offline"
+  },
+  "dependencies": {
+    "@aws-crypto/client-node": "^2.3.0",
+    "@aws-sdk/client-dynamodb": "^3.18.0",
+    "@aws-sdk/client-eventbridge": "^3.18.0",
+    "@aws-sdk/lib-dynamodb": "^3.18.0",
+    "@revolutionmortgage/rm-logger": "^0.0.14",
+    "axios": "^0.21.1",
+    "lodash": "^4.17.20"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.11.5",
+    "@babel/preset-typescript": "^7.10.4",
+    "@types/aws-lambda": "^8.10.61",
+    "@types/jest": "^26.0.13",
+    "@types/lodash": "^4.14.164",
+    "@types/node": "^14.6.4",
+    "@types/uuid": "^8.3.0",
+    "jest": "^26.4.2",
+    "serverless-offline": "^7.0.0",
+    "serverless-plugin-typescript": "^1.1.9",
+    "serverless-pseudo-parameters": "^2.5.0",
+    "typescript": "^3.9.6"
+  },
+  "wallaby": {
+    "autoDetect": true
+  }
+}
